@@ -1,0 +1,87 @@
+#! /usr/bin/perl
+
+use strict;
+
+use FindBin;
+use Time::HiRes qw(time sleep);
+
+use Data::Dumper;
+$Data::Dumper::Sortkeys = $Data::Dumper::Indent = 1;
+
+my $pidfile = "$FindBin::Bin/../run/upslogger.pid";
+my $logfile = "$FindBin::Bin/../log/upslogger.log";
+
+my $mode = shift;
+
+if ($mode eq 'start') {
+
+    if (-e $pidfile) {
+	open PID, "<", $pidfile;
+	my $pid = <PID>;
+	close PID;
+	chomp $pid;
+	if (kill 0, $pid) {
+	    warn "Already running\n";
+	    exit 2;
+	}
+	else {
+	    warn "stale pidfile\n";
+	}
+    }
+
+    open PID, ">", $pidfile
+      or die "error opening pidfile ($pidfile): $!\n";
+
+    open LOG, ">>", $logfile
+      or die "error opening logfile ($logfile): $!\n";
+
+    my $pid = fork;
+
+    die "fork: $!\n"
+      unless defined $pid;
+
+    if ($pid) {
+	printf "Starting upslogger...\n";
+	printf PID "%d\n", $pid;
+	$SIG{CHKD} = 'IGNORE';
+	exit;
+    }
+
+    close PID;
+
+    close STDIN;
+    close STDOUT;
+    close STDERR;
+
+    $SIG{TERM} = sub { unlink $pidfile; exit };
+
+    # wait until whole minutes
+    sleep( (60 - time()%60)%60 );
+
+    while (1) {
+	my $start = time;
+	my %data;
+	open UPS, "-|", "/sbin/apcaccess";
+	while (<UPS>) {
+	    if (my($key,$val) = /^(\S+)\s*:\s*(.*)/) {
+		$data{$key} = $val;
+	    }
+	}
+	close UPS;
+
+	$data{BCHARGE} =~ s/\s+Percent.*//;
+	$data{LOADPCT} =~ s/\s+Percent.*//;
+	$data{LINEV} =~ s/\s+Volts.*//;
+	$data{TIMELEFT} =~ s/\s+Minutes.*//;
+
+	open LOG, ">>", $logfile;
+	printf LOG "%d %s\n", time, join " ", @data{qw(BCHARGE LOADPCT LINEV TIMELEFT)};
+	close LOG;
+
+	# print Dumper \%data;
+
+	# printf "sleep %s\n", $start+60-time();
+	sleep $start+60-time();
+    }
+    
+}
